@@ -3,7 +3,7 @@
     "timestamp": "2026-05-26T07:39:18.569Z",
     "startDate": "2026-05-25",
     "endDate": "2026-05-25",
-    "address": "0x5C5a38168517B610fe06b00c07a2D45BBB10c2e8",
+    "address": "0x0000000000000000000000000000000000000000",
     "tasks": [
         {
             "id": "usdt_mint_eth-sepolia_10_2026-05-25",
