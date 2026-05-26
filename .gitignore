@@ -1,0 +1,10 @@
+node_modules/
+dist/
+pv.txt
+proxy.txt
+progress.json
+.env
+.env.*
+!.env.example
+*.log
+task-list.txt
