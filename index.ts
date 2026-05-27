@@ -7,8 +7,7 @@ import { runWalletTasks } from './runner';
 import { randomSleep, shuffleArray, formatProxyString } from './sybil';
 
 const RPCS = [
-    process.env.RPC || "https://eth-sepolia.g.alchemy.com/v2/s7fdCDCUVr0QNlQf6cSC94ogwjXw0g29",
-    "https://api.web3auth.io/infura-service/v1/0xaa36a7/BBxWMjyduQj8NuN7Fu1luxCY-YCQl-CSRf9R5LtrjFKWbyGstCpjSDhyR3jD_4T2RKP-liJCyCG2GCrCdZSor_4",
+    process.env.RPC || 
     "https://rpc.ankr.com/eth_sepolia",
     "https://sepolia.rpc.sentio.xyz",
     "https://rpc.sepolia.ethpandaops.io",
