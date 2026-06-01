@@ -35,10 +35,12 @@ Additional human-behaviour layers:
 - Same wallet → same IP every run → consistent identity across sessions.
 - When `proxy.txt` is updated weekly, **stale assignments are auto-reassigned** to new proxies while valid ones are preserved.
 
-### 🔄 Task Syncing & Verification (End-of-Run Retry)
+### 🔄 Sliding-Window Verification Queue (Anti-Sybil Delay)
 - **Initial Sync**: Fetches today's tasks directly from the Overlayer API per wallet, automatically syncing any tasks already completed on the platform to avoid redundant transactions.
-- **Indexer Settle Wait**: The bot waits 60 seconds at the end of the run to allow Sepolia block transactions to be processed by Overlayer's database indexer.
-- **Verification & Cleanup Phase ("In the End")**: The bot queries the Overlayer API directly for each wallet to verify task completion. If the API reports any task as incomplete (due to drop, indexing latency, or RPC issues), the bot automatically re-runs only those failed tasks.
+- **Persistent Temp Queue**: Completed wallets are queued in a local gitignored file (`progress/verification-queue.json`). To prevent write conflicts and race conditions across parallel workers, the bot uses a global in-memory state mirror synchronized with atomic disk writes.
+- **10-Minute Indexing Delay**: To allow Overlayer's database indexer plenty of time to process on-chain blocks, the bot enforces a strict 10-minute wait before verifying tasks.
+- **Sliding Window Processing**: Verification is checked asynchronously: as new wallets finish, the bot checks the queue and verifies any wallets that have reached the 10-minute age mark.
+- **Final Drain**: At the end of the run, the bot drains the queue, waiting for the remaining wallets to hit their 10-minute mark, retrying any uncompleted tasks, and deleting the temporary queue file when all tasks are successfully verified.
 - **Fallback scaling**: Falls back to a local `task-list.txt` cache and scales amounts by 1.5× if no fresh tasks are found on the API.
 
 ### ⛽ Gwei-Aware Gas Gating
@@ -130,8 +132,9 @@ The bot will:
 2. Check activity window (waits if outside 05:00–23:00 UTC).
 3. Load and pin proxies to wallets (persistent across runs).
 4. Launch 5 parallel workers with staggered startup.
-5. Per wallet: check gas → authenticate → check C+/T+ balances (auto top-up to 5,000+ if deficient) → fetch tasks → execute on-chain transactions with persona timing → save progress.
-6. **In the End**: Wait 60 seconds for indexing, query the Overlayer API to verify all tasks, and automatically retry any that failed to register.
+5. Per wallet: check gas → authenticate → check C+/T+ balances (auto top-up to 5,000+ if deficient) → fetch tasks → execute on-chain transactions with persona timing → save progress → add to 10-minute verification queue.
+6. **Asynchronous Check**: Workers check the queue after processing each wallet, verifying those that have reached the 10-minute age mark.
+7. **Final Drain**: After the worker pool finishes, the bot waits for the remaining wallets in the queue to reach 10 minutes, verifies them, and deletes the temporary queue file.
 
 ---
 

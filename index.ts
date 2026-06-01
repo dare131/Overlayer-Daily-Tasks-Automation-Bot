@@ -75,6 +75,154 @@ async function checkGasPriceAndBlock(provider: JsonRpcProvider, maxGwei?: number
     }
 }
 
+const verificationQueueFile = path.join(__dirname, 'progress', 'verification-queue.json');
+
+function loadVerificationQueue(): Array<{ pk: string; proxyStr: string; nextPk: string; timestamp: number }> {
+    try {
+        if (fs.existsSync(verificationQueueFile)) {
+            return JSON.parse(fs.readFileSync(verificationQueueFile, 'utf-8'));
+        }
+    } catch {}
+    return [];
+}
+
+function saveVerificationQueue(queue: Array<{ pk: string; proxyStr: string; nextPk: string; timestamp: number }>) {
+    try {
+        const dir = path.dirname(verificationQueueFile);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        if (queue.length === 0) {
+            if (fs.existsSync(verificationQueueFile)) {
+                fs.unlinkSync(verificationQueueFile);
+            }
+        } else {
+            fs.writeFileSync(verificationQueueFile, JSON.stringify(queue, null, 2));
+        }
+    } catch {}
+}
+
+let verificationQueue = loadVerificationQueue();
+
+async function verifyWallet(
+    walletConf: { pk: string; proxyStr: string; nextPk: string; timestamp: number },
+    workingRpc: string,
+    proxies: string[],
+    todayStr: string
+): Promise<boolean> {
+    const { pk, proxyStr } = walletConf;
+    const currentAddr = new Wallet(pk).address;
+    const formattedProxy = proxyStr ? formatProxyString(proxyStr) : undefined;
+    const sessionFile = path.join(__dirname, 'progress', `session-${currentAddr.toLowerCase()}.json`);
+    const walletProgressFile = path.join(__dirname, 'progress', `progress-${currentAddr.toLowerCase()}.json`);
+
+    console.log(`[${currentAddr.slice(0, 8)}] 🔍 Verifying task completion status on Overlayer API...`);
+    
+    let walletToken = '';
+    try {
+        if (fs.existsSync(sessionFile)) {
+            walletToken = JSON.parse(fs.readFileSync(sessionFile, 'utf-8')).token;
+        }
+    } catch {}
+
+    if (!walletToken) {
+        try {
+            const nonce = await fetchNonce(currentAddr, formattedProxy);
+            const ts = Math.floor(Date.now() / 1000) + 300;
+            const authMessage = `Request Overlayer social session\n${currentAddr.toLowerCase()}\n${ts}\n${nonce}`;
+            const authSignature = await new Wallet(pk).signMessage(authMessage);
+            const { token } = await verifyAuth(currentAddr, authMessage, authSignature, formattedProxy);
+            walletToken = token;
+        } catch (e: any) {
+            console.log(`[${currentAddr.slice(0, 8)}] ❌ Verification auth failed: ${e.message?.slice(0, 80)}`);
+            return false;
+        }
+    }
+
+    try {
+        const latestTasks = await fetchDailyTasks(currentAddr, walletToken, formattedProxy);
+        const uncompleted = latestTasks.filter(t => t.active && !t.completed);
+
+        if (uncompleted.length === 0) {
+            console.log(`[${currentAddr.slice(0, 8)}] ✅ All tasks successfully verified on Overlayer API!`);
+            const verifiedIds = latestTasks.filter(t => t.completed).map(t => t.id);
+            fs.writeFileSync(walletProgressFile, JSON.stringify({ [todayStr]: verifiedIds }, null, 2));
+            return true;
+        }
+
+        console.log(`[${currentAddr.slice(0, 8)}] ⚠️ Overlayer API reports ${uncompleted.length} task(s) still unverified after 10m. Retrying execution...`);
+        const nextWalletAddr = new Wallet(walletConf.nextPk.startsWith('0x') ? walletConf.nextPk : '0x' + walletConf.nextPk).address;
+
+        await runWalletTasks(
+            pk,
+            proxyStr,
+            workingRpc,
+            nextWalletAddr,
+            uncompleted,
+            [],
+            proxies,
+            (taskId: string) => {
+                try {
+                    let completedIds: string[] = [];
+                    if (fs.existsSync(walletProgressFile)) {
+                        const data = JSON.parse(fs.readFileSync(walletProgressFile, 'utf-8'));
+                        completedIds = data[todayStr] || [];
+                    }
+                    completedIds.push(taskId);
+                    completedIds = Array.from(new Set(completedIds));
+                    fs.writeFileSync(walletProgressFile, JSON.stringify({ [todayStr]: completedIds }, null, 2));
+                } catch {}
+            }
+        );
+
+        // Update timestamp to now so it waits another 10m for verification of retried tasks
+        walletConf.timestamp = Date.now();
+        return false;
+    } catch (err: any) {
+        console.log(`[${currentAddr.slice(0, 8)}] ❌ Error verifying tasks: ${err.message?.slice(0, 80)}`);
+        return false;
+    }
+}
+
+let processingQueue = false;
+async function processReadyQueue(workingRpc: string, proxies: string[], todayStr: string) {
+    if (processingQueue) return;
+    processingQueue = true;
+    try {
+        if (verificationQueue.length === 0) {
+            processingQueue = false;
+            return;
+        }
+
+        const now = Date.now();
+        const verifiedAddresses = new Set<string>();
+        let updated = false;
+        
+        for (const item of verificationQueue) {
+            const elapsed = now - item.timestamp;
+            if (elapsed >= 10 * 60 * 1000) { // 10 minutes
+                const success = await verifyWallet(item, workingRpc, proxies, todayStr);
+                if (success) {
+                    const addr = new Wallet(item.pk).address;
+                    verifiedAddresses.add(addr);
+                }
+                updated = true;
+            }
+        }
+
+        if (updated) {
+            if (verifiedAddresses.size > 0) {
+                verificationQueue = verificationQueue.filter(item => {
+                    const addr = new Wallet(item.pk).address;
+                    return !verifiedAddresses.has(addr);
+                });
+            }
+            saveVerificationQueue(verificationQueue);
+        }
+    } catch (e: any) {
+        console.error(`⚠️ Error processing ready verification queue: ${e.message}`);
+    }
+    processingQueue = false;
+}
+
 function parseFileLines(filename: string): string[] {
     const filePath = path.join(__dirname, filename);
     if (!fs.existsSync(filePath)) return [];
@@ -393,7 +541,7 @@ async function main() {
         }
 
         // Run tasks
-        await runWalletTasks(
+        const completedThisRun = await runWalletTasks(
             pk,
             proxyStr,
             workingRpc,
@@ -412,6 +560,16 @@ async function main() {
                 }
             }
         );
+
+        // --- ADD TO VERIFICATION QUEUE ---
+        if (completedThisRun.length > 0) {
+            verificationQueue.push({ pk, proxyStr, nextPk, timestamp: Date.now() });
+            saveVerificationQueue(verificationQueue);
+            console.log(`[${currentAddr.slice(0, 8)}] 📝 Added to verification queue. Will verify after 10-minute indexing delay.`);
+        }
+
+        // Process any wallets in the queue that have reached the 10-minute mark
+        await processReadyQueue(workingRpc, proxies, todayStr);
 
         // Fetch Points
         try {
@@ -452,94 +610,35 @@ async function main() {
     console.log(`\n🚀 Starting concurrent processing of ${walletTasks.length} wallets with 5 parallel workers...`);
     await runPool(walletTasks, 5);
 
-    // --- VERIFICATION & RETRY PHASE (IN THE END) ---
-    console.log('\n⏳ Waiting 60 seconds for Overlayer transaction indexing to settle before final verification...');
-    for (let count = 60; count > 0; count -= 10) {
-        console.log(`   Verification starts in ${count}s...`);
-        await randomSleep(10000, 10000);
+    // --- FINAL DRAIN OF THE VERIFICATION QUEUE ---
+    console.log('\n⏳ Entering final verification drain phase (processing remaining wallets)...');
+    while (true) {
+        if (verificationQueue.length === 0) break;
+
+        const now = Date.now();
+        // Find the oldest item
+        let oldest = verificationQueue[0];
+        for (const item of verificationQueue) {
+            if (item.timestamp < oldest.timestamp) {
+                oldest = item;
+            }
+        }
+
+        const elapsed = now - oldest.timestamp;
+        const waitTime = Math.max(0, 10 * 60 * 1000 - elapsed);
+        const oldestAddr = new Wallet(oldest.pk).address;
+
+        if (waitTime > 0) {
+            const waitMin = (waitTime / 60000).toFixed(1);
+            console.log(`\n⏳ Waiting ${waitMin}m for wallet ${oldestAddr.slice(0, 8)} to reach the 10-minute index age...`);
+            await randomSleep(waitTime, waitTime);
+        }
+
+        // Run check again
+        await processReadyQueue(workingRpc, proxies, todayStr);
     }
 
-    console.log('\n🔍 Starting final verification phase with Overlayer API...');
-    const retryWalletTasks = walletConfigs.map((walletConf) => {
-        return async () => {
-            const { pk, proxyStr } = walletConf;
-            const currentAddr = new Wallet(pk).address;
-            const formattedProxy = proxyStr ? formatProxyString(proxyStr) : undefined;
-            const sessionFile = path.join(progressDir, `session-${currentAddr.toLowerCase()}.json`);
-            const walletProgressFile = path.join(progressDir, `progress-${currentAddr.toLowerCase()}.json`);
-
-            let walletToken = '';
-            try {
-                if (fs.existsSync(sessionFile)) {
-                    const session = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
-                    walletToken = session.token;
-                }
-            } catch { }
-
-            if (!walletToken) {
-                try {
-                    const nonce = await fetchNonce(currentAddr, formattedProxy);
-                    const ts = Math.floor(Date.now() / 1000) + 300;
-                    const authMessage = `Request Overlayer social session\n${currentAddr.toLowerCase()}\n${ts}\n${nonce}`;
-                    const authSignature = await new Wallet(pk).signMessage(authMessage);
-                    const { token } = await verifyAuth(currentAddr, authMessage, authSignature, formattedProxy);
-                    walletToken = token;
-                } catch (e: any) {
-                    console.log(`[${currentAddr.slice(0, 8)}] ❌ Verification auth failed: ${e.message?.slice(0, 80)}`);
-                    return;
-                }
-            }
-
-            try {
-                const latestTasks = await fetchDailyTasks(currentAddr, walletToken, formattedProxy);
-                const uncompleted = latestTasks.filter(t => t.active && !t.completed);
-
-                if (uncompleted.length === 0) {
-                    console.log(`[${currentAddr.slice(0, 8)}] ✅ All tasks successfully verified on Overlayer!`);
-                    const verifiedIds = latestTasks.filter(t => t.completed).map(t => t.id);
-                    fs.writeFileSync(walletProgressFile, JSON.stringify({ [todayStr]: verifiedIds }, null, 2));
-                    return;
-                }
-
-                console.log(`[${currentAddr.slice(0, 8)}] ⚠️ Overlayer API reports ${uncompleted.length} task(s) still NOT verified. Retrying execution...`);
-                for (const t of uncompleted) {
-                    console.log(`  - Retrying task: ${t.title} (${t.type})`);
-                }
-
-                const nextWalletAddr = new Wallet(walletConf.nextPk.startsWith('0x') ? walletConf.nextPk : '0x' + walletConf.nextPk).address;
-
-                await runWalletTasks(
-                    pk,
-                    proxyStr,
-                    workingRpc,
-                    nextWalletAddr,
-                    uncompleted,
-                    [],
-                    proxies,
-                    (taskId: string) => {
-                        try {
-                            let completedIds: string[] = [];
-                            if (fs.existsSync(walletProgressFile)) {
-                                const data = JSON.parse(fs.readFileSync(walletProgressFile, 'utf-8'));
-                                completedIds = data[todayStr] || [];
-                            }
-                            completedIds.push(taskId);
-                            completedIds = Array.from(new Set(completedIds));
-                            fs.writeFileSync(walletProgressFile, JSON.stringify({ [todayStr]: completedIds }, null, 2));
-                        } catch { }
-                    }
-                );
-
-            } catch (err: any) {
-                console.log(`[${currentAddr.slice(0, 8)}] ❌ Error verifying tasks: ${err.message?.slice(0, 80)}`);
-            }
-        };
-    });
-
-    console.log(`\n🔄 Running final cleanup & retry on ${retryWalletTasks.length} wallets...`);
-    await runPool(retryWalletTasks, 5);
-
-    console.log('\n🎉 Verification and retry completed. You can close the bot.');
+    console.log('\n🎉 All wallets processed and verified on Overlayer. You can close the bot.');
 }
 
 main().catch(console.error);
