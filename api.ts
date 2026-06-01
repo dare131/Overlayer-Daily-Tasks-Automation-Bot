@@ -44,6 +44,29 @@ export async function fetchDailyTasks(address: string, token: string, proxyUrl?:
     return tasks.filter(t => t.startDate === todayStr);
 }
 
+export async function fetchNonce(address: string, proxyUrl?: string): Promise<string> {
+    const req = createFetchRequest(`${API_BASE}/api-s/auth/nonce/${address}`, proxyUrl);
+    req.setHeader('Origin', 'https://testnet.overlayer.fi');
+    const res = await req.send();
+    res.assertOk();
+    const data = res.bodyJson as { success: boolean; nonce: string };
+    if (!data.success || !data.nonce) throw new Error('Failed to fetch nonce');
+    return data.nonce;
+}
+
+export async function verifyAuth(address: string, message: string, signature: string, proxyUrl?: string): Promise<{ token: string; expiresAt: string }> {
+    const req = createFetchRequest(`${API_BASE}/api-s/auth/verify/${address}`, proxyUrl);
+    req.method = 'POST';
+    req.setHeader('Content-Type', 'application/json');
+    req.setHeader('Origin', 'https://testnet.overlayer.fi');
+    req.body = Buffer.from(JSON.stringify({ message, signature }));
+    const res = await req.send();
+    res.assertOk();
+    const data = res.bodyJson as { success: boolean; token: string; expiresAt: string };
+    if (!data.success || !data.token) throw new Error('Auth verify returned no token');
+    return { token: data.token, expiresAt: data.expiresAt || '' };
+}
+
 export async function getPoints(address: string, proxyUrl?: string): Promise<number> {
     try {
         const req = createFetchRequest(`${API_BASE}/api-s/socials/onchain-tasks/points/${address}`, proxyUrl);
@@ -56,10 +79,12 @@ export async function getPoints(address: string, proxyUrl?: string): Promise<num
     }
 }
 
-export async function submitGdprConsent(address: string, proxyUrl?: string): Promise<boolean> {
+export async function submitGdprConsent(address: string, proxyUrl?: string, token?: string): Promise<boolean> {
     const req = createFetchRequest(`${API_BASE}/api-s/gdpr-consent/${address}`, proxyUrl);
     req.method = 'POST';
     req.setHeader('Content-Type', 'application/json');
+    req.setHeader('Origin', 'https://testnet.overlayer.fi');
+    if (token) req.setHeader('Authorization', `Bearer ${token}`);
     req.body = Buffer.from('{}');
     const res = await req.send();
     return res.statusCode === 200 || res.statusCode === 201;
