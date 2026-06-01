@@ -16,7 +16,7 @@ process.on('uncaughtException', (err) => {
 });
 
 const RPCS = [
-    process.env.RPC || "https://eth-sepolia.g.alchemy.com/v2/s7fdCDCUVr0QNlQf6cSC94ogwjXw0g29",
+    process.env.RPC ||
     "https://rpc.ankr.com/eth_sepolia",
     "https://sepolia.rpc.sentio.xyz",
     "https://rpc.sepolia.ethpandaops.io",
