@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Wallet, JsonRpcProvider, FetchRequest } from 'ethers';
+import { Wallet, JsonRpcProvider, FetchRequest, parseUnits } from 'ethers';
 import { fetchDailyTasks, fetchNonce, verifyAuth, getPoints, requestOgMint, submitGdprConsent } from './api';
 import { runWalletTasks } from './runner';
 import { randomSleep, humanSleep, shuffleArray, formatProxyString, getWalletPersona, isWithinActivityWindow, msUntilActivityWindow } from './sybil';
@@ -43,6 +43,38 @@ async function getWorkingRpc(): Promise<string> {
     throw new Error("No working RPC found!");
 }
 
+async function checkGasPriceAndBlock(provider: JsonRpcProvider, maxGwei?: number) {
+    if (!maxGwei) return;
+    let logged = false;
+    while (true) {
+        try {
+            const feeData = await provider.getFeeData();
+            const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? parseUnits("10", "gwei");
+            const gwei = Number(gasPrice) / 1e9;
+
+            if (gwei <= maxGwei) {
+                if (logged) {
+                    console.log(`\n⛽ Gas price is back down to ${gwei.toFixed(2)} Gwei. Resuming...`);
+                }
+                break;
+            }
+
+            if (!logged) {
+                console.log(`\n⛽ [GAS GATE] Current gas price is ${gwei.toFixed(2)} Gwei, which exceeds the limit of ${maxGwei} Gwei. Pausing execution...`);
+                logged = true;
+            } else {
+                process.stdout.write(`.`); // silent dot indicator
+            }
+
+            // Sleep for 30 seconds before checking again
+            await randomSleep(30000, 30000);
+        } catch (e: any) {
+            console.log(`\n⚠️ Failed to fetch gas price: ${e.message}. Retrying in 15s...`);
+            await randomSleep(15000, 15000);
+        }
+    }
+}
+
 function parseFileLines(filename: string): string[] {
     const filePath = path.join(__dirname, filename);
     if (!fs.existsSync(filePath)) return [];
@@ -53,13 +85,13 @@ function parseFileLines(filename: string): string[] {
 function getPreviousDayTasks(allTasks: any[], todayStr: string): any[] {
     const tasksNotToday = allTasks.filter(t => t.startDate && t.startDate !== todayStr);
     if (tasksNotToday.length === 0) return [];
-    
+
     const dates = Array.from(new Set(tasksNotToday.map(t => t.startDate))).sort().reverse();
     const mostRecentDate = dates[0];
     console.log(`No tasks found for today (${todayStr}). Found previous day tasks from ${mostRecentDate}.`);
-    
+
     const prevTasks = allTasks.filter(t => t.startDate === mostRecentDate);
-    
+
     return prevTasks.map(t => {
         let newId = t.id;
         if (t.id.endsWith(mostRecentDate)) {
@@ -67,7 +99,7 @@ function getPreviousDayTasks(allTasks: any[], todayStr: string): any[] {
         } else {
             newId = `${t.id}_${todayStr}`;
         }
-        
+
         return {
             ...t,
             id: newId,
@@ -89,7 +121,7 @@ function updateTaskListFile(fetchedTasks: any[]) {
             currentList = JSON.parse(json.trim());
         }
         if (!currentList.tasks) currentList.tasks = [];
-        
+
         for (const t of fetchedTasks) {
             const idx = currentList.tasks.findIndex((ext: any) => ext.id === t.id);
             if (idx !== -1) {
@@ -108,7 +140,7 @@ function updateTaskListFile(fetchedTasks: any[]) {
 
 async function main() {
     console.log('🚀 Starting Ultimate Overlayer Sybil-Proof Bot...');
-    
+
     const pks = parseFileLines('pv.txt');
     const proxies = parseFileLines('proxy.txt');
 
@@ -119,6 +151,23 @@ async function main() {
 
     console.log(`Loaded ${pks.length} wallets and ${proxies.length} proxies.`);
     const workingRpc = await getWorkingRpc();
+
+    // --- GAS PRICE CHECK & GATING ---
+    const MAX_GWEI = process.env.MAX_GWEI ? parseFloat(process.env.MAX_GWEI) : undefined;
+    const tempProvider = new JsonRpcProvider(workingRpc, undefined, { staticNetwork: true });
+    try {
+        const feeData = await tempProvider.getFeeData();
+        const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? parseUnits("10", "gwei");
+        const currentGwei = Number(gasPrice) / 1e9;
+        if (MAX_GWEI !== undefined) {
+            console.log(`⛽ Current Sepolia Gas: ${currentGwei.toFixed(2)} Gwei (Limit set to: ${MAX_GWEI} Gwei)`);
+            await checkGasPriceAndBlock(tempProvider, MAX_GWEI);
+        } else {
+            console.log(`⛽ Current Sepolia Gas: ${currentGwei.toFixed(2)} Gwei (No limit set)`);
+        }
+    } catch (e: any) {
+        console.log(`⚠️ Initial gas check failed: ${e.message}`);
+    }
 
     // --- ACTIVITY WINDOW GATE ---
     // Only run during human-plausible hours (05:00–23:00 UTC).
@@ -136,12 +185,12 @@ async function main() {
     // When proxy.txt is updated (old proxies removed, new ones added), wallets
     // whose pinned proxy is no longer in the list are automatically reassigned.
     const progressDir = path.join(__dirname, 'progress');
-    if (!fs.existsSync(progressDir)) { try { fs.mkdirSync(progressDir, { recursive: true }); } catch {} }
+    if (!fs.existsSync(progressDir)) { try { fs.mkdirSync(progressDir, { recursive: true }); } catch { } }
     const proxyMapFile = path.join(progressDir, 'proxy-map.json');
     let proxyMap: Record<string, string> = {};
     try {
         if (fs.existsSync(proxyMapFile)) proxyMap = JSON.parse(fs.readFileSync(proxyMapFile, 'utf-8'));
-    } catch {}
+    } catch { }
 
     // Build a Set of currently active proxies for O(1) lookup
     const activeProxySet = new Set(proxies);
@@ -179,7 +228,7 @@ async function main() {
     });
 
     if (proxyMapUpdated) {
-        try { fs.writeFileSync(proxyMapFile, JSON.stringify(proxyMap, null, 2)); } catch {}
+        try { fs.writeFileSync(proxyMapFile, JSON.stringify(proxyMap, null, 2)); } catch { }
         if (reassignedCount > 0)
             console.log(`📌 Proxy rotation: ${reassignedCount} wallet(s) reassigned to new proxies, ${newlyPinnedCount} newly pinned. Saved.`);
         else
@@ -193,7 +242,7 @@ async function main() {
     let theRest = walletConfigs.slice(2);
     console.log(`Keeping first ${firstTwo.length} wallets in order, shuffling the remaining ${theRest.length}...`);
     theRest = shuffleArray(theRest);
-    
+
     walletConfigs = [...firstTwo, ...theRest];
 
     const GLOBAL_AUTH_TOKEN = process.env.GLOBAL_AUTH_TOKEN || '';
@@ -225,7 +274,7 @@ async function main() {
             const jsonContent = firstBrace !== -1 ? rawContent.slice(firstBrace) : rawContent;
             const parsed = JSON.parse(jsonContent.trim());
             const allFallbackTasks = parsed.tasks || [];
-            
+
             let todayFallbackTasks = allFallbackTasks.filter((t: any) => t.startDate === todayStr);
             if (todayFallbackTasks.length > 0) {
                 console.log(`✅ Loaded ${todayFallbackTasks.length} tasks from fallback task-list.txt for today (${todayStr}).`);
@@ -239,7 +288,7 @@ async function main() {
                     console.log(`❌ No fallback tasks found at all in task-list.txt.`);
                 }
             }
-        } catch(ex: any) {
+        } catch (ex: any) {
             console.log(`❌ Fallback parsing failed: ${ex.message}`);
         }
     }
@@ -250,8 +299,15 @@ async function main() {
         const { pk, proxyStr, nextPk } = walletConf;
         const nextWalletAddr = new Wallet(nextPk.startsWith('0x') ? nextPk : '0x' + nextPk).address;
         const currentAddr = new Wallet(pk).address;
+
+        // Check gas price before running wallet tasks
+        if (MAX_GWEI !== undefined) {
+            const checkProvider = new JsonRpcProvider(workingRpc, undefined, { staticNetwork: true });
+            await checkGasPriceAndBlock(checkProvider, MAX_GWEI);
+        }
+
         const persona = getWalletPersona(currentAddr);
-        console.log(`[${currentAddr.slice(0,8)}] 🧠 Persona: ${persona.name}`);
+        console.log(`[${currentAddr.slice(0, 8)}] 🧠 Persona: ${persona.name}`);
 
         // progressDir is already created in main() scope above — reuse it
         const walletProgressFile = path.join(progressDir, `progress-${currentAddr.toLowerCase()}.json`);
@@ -263,7 +319,7 @@ async function main() {
                 const data = JSON.parse(fs.readFileSync(walletProgressFile, 'utf-8'));
                 completedTaskIds = data[todayStr] || [];
             }
-        } catch (e) {}
+        } catch (e) { }
         // NOTE: early skip check removed — completion is re-checked below after
         // per-wallet tasks are resolved (walletTasks may differ from global tasks)
 
@@ -281,13 +337,13 @@ async function main() {
                 // Use cached token if it has more than 1 hour left before expiry
                 if (session.token && expiry - Date.now() > 3600_000) {
                     walletToken = session.token;
-                    console.log(`[${currentAddr.slice(0,8)}] 🔑 Reusing cached JWT (expires ${session.expiresAt.slice(0,10)}).`);
+                    console.log(`[${currentAddr.slice(0, 8)}] 🔑 Reusing cached JWT (expires ${session.expiresAt.slice(0, 10)}).`);
                 }
             }
 
             if (!walletToken) {
                 // Fresh authentication
-                console.log(`[${currentAddr.slice(0,8)}] 🔐 Authenticating with Overlayer API...`);
+                console.log(`[${currentAddr.slice(0, 8)}] 🔐 Authenticating with Overlayer API...`);
                 const nonce = await fetchNonce(currentAddr, formattedProxy);
                 const ts = Math.floor(Date.now() / 1000) + 300;
                 const authMessage = `Request Overlayer social session\n${currentAddr.toLowerCase()}\n${ts}\n${nonce}`;
@@ -297,20 +353,25 @@ async function main() {
                 // Save JWT + expiry to disk for reuse next run
                 try {
                     fs.writeFileSync(sessionFile, JSON.stringify({ token, expiresAt }, null, 2));
-                } catch {}
-                console.log(`[${currentAddr.slice(0,8)}] ✅ Auth token obtained and cached.`);
+                } catch { }
+                console.log(`[${currentAddr.slice(0, 8)}] ✅ Auth token obtained and cached.`);
             }
 
             // Fetch this wallet's own daily tasks using its pinned proxy
             const ownTasks = await fetchDailyTasks(currentAddr, walletToken, formattedProxy);
             if (ownTasks.length > 0) {
                 walletTasks = ownTasks;
-                console.log(`[${currentAddr.slice(0,8)}] ✅ Loaded ${ownTasks.length} personal tasks.`);
+                console.log(`[${currentAddr.slice(0, 8)}] ✅ Loaded ${ownTasks.length} personal tasks.`);
+                const apiCompletedIds = ownTasks.filter(t => t.completed).map(t => t.id);
+                if (apiCompletedIds.length > 0) {
+                    completedTaskIds = Array.from(new Set([...completedTaskIds, ...apiCompletedIds]));
+                    console.log(`[${currentAddr.slice(0, 8)}] 📊 API reports ${apiCompletedIds.length} task(s) already completed.`);
+                }
             } else {
-                console.log(`[${currentAddr.slice(0,8)}] ⚠️ No tasks returned. Using global task list.`);
+                console.log(`[${currentAddr.slice(0, 8)}] ⚠️ No tasks returned. Using global task list.`);
             }
         } catch (authErr: any) {
-            console.log(`[${currentAddr.slice(0,8)}] ⚠️ Auth failed: ${authErr.message?.slice(0,80)}. Falling back to global task list.`);
+            console.log(`[${currentAddr.slice(0, 8)}] ⚠️ Auth failed: ${authErr.message?.slice(0, 80)}. Falling back to global task list.`);
         }
 
         // Re-check completion using wallet-specific tasks
@@ -333,12 +394,12 @@ async function main() {
 
         // Run tasks
         await runWalletTasks(
-            pk, 
-            proxyStr, 
-            workingRpc, 
-            nextWalletAddr, 
-            walletTasks, 
-            completedTaskIds, 
+            pk,
+            proxyStr,
+            workingRpc,
+            nextWalletAddr,
+            walletTasks,
+            completedTaskIds,
             proxies,
             (taskId: string) => {
                 completedTaskIds.push(taskId);
@@ -356,7 +417,7 @@ async function main() {
         try {
             const pts = await getPoints(currentAddr, formattedProxy);
             console.log(`[${currentAddr.slice(0, 8)}] Total Points: ${pts}`);
-        } catch (e) {}
+        } catch (e) { }
 
         // Introduce a short stagger sleep between processed wallets in the pool
         const sleepMs = Math.floor(Math.random() * 5000) + 3000;
@@ -391,7 +452,94 @@ async function main() {
     console.log(`\n🚀 Starting concurrent processing of ${walletTasks.length} wallets with 5 parallel workers...`);
     await runPool(walletTasks, 5);
 
-    console.log('\n🎉 All wallets processed for today. You can close the bot.');
+    // --- VERIFICATION & RETRY PHASE (IN THE END) ---
+    console.log('\n⏳ Waiting 60 seconds for Overlayer transaction indexing to settle before final verification...');
+    for (let count = 60; count > 0; count -= 10) {
+        console.log(`   Verification starts in ${count}s...`);
+        await randomSleep(10000, 10000);
+    }
+
+    console.log('\n🔍 Starting final verification phase with Overlayer API...');
+    const retryWalletTasks = walletConfigs.map((walletConf) => {
+        return async () => {
+            const { pk, proxyStr } = walletConf;
+            const currentAddr = new Wallet(pk).address;
+            const formattedProxy = proxyStr ? formatProxyString(proxyStr) : undefined;
+            const sessionFile = path.join(progressDir, `session-${currentAddr.toLowerCase()}.json`);
+            const walletProgressFile = path.join(progressDir, `progress-${currentAddr.toLowerCase()}.json`);
+
+            let walletToken = '';
+            try {
+                if (fs.existsSync(sessionFile)) {
+                    const session = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
+                    walletToken = session.token;
+                }
+            } catch { }
+
+            if (!walletToken) {
+                try {
+                    const nonce = await fetchNonce(currentAddr, formattedProxy);
+                    const ts = Math.floor(Date.now() / 1000) + 300;
+                    const authMessage = `Request Overlayer social session\n${currentAddr.toLowerCase()}\n${ts}\n${nonce}`;
+                    const authSignature = await new Wallet(pk).signMessage(authMessage);
+                    const { token } = await verifyAuth(currentAddr, authMessage, authSignature, formattedProxy);
+                    walletToken = token;
+                } catch (e: any) {
+                    console.log(`[${currentAddr.slice(0, 8)}] ❌ Verification auth failed: ${e.message?.slice(0, 80)}`);
+                    return;
+                }
+            }
+
+            try {
+                const latestTasks = await fetchDailyTasks(currentAddr, walletToken, formattedProxy);
+                const uncompleted = latestTasks.filter(t => t.active && !t.completed);
+
+                if (uncompleted.length === 0) {
+                    console.log(`[${currentAddr.slice(0, 8)}] ✅ All tasks successfully verified on Overlayer!`);
+                    const verifiedIds = latestTasks.filter(t => t.completed).map(t => t.id);
+                    fs.writeFileSync(walletProgressFile, JSON.stringify({ [todayStr]: verifiedIds }, null, 2));
+                    return;
+                }
+
+                console.log(`[${currentAddr.slice(0, 8)}] ⚠️ Overlayer API reports ${uncompleted.length} task(s) still NOT verified. Retrying execution...`);
+                for (const t of uncompleted) {
+                    console.log(`  - Retrying task: ${t.title} (${t.type})`);
+                }
+
+                const nextWalletAddr = new Wallet(walletConf.nextPk.startsWith('0x') ? walletConf.nextPk : '0x' + walletConf.nextPk).address;
+
+                await runWalletTasks(
+                    pk,
+                    proxyStr,
+                    workingRpc,
+                    nextWalletAddr,
+                    uncompleted,
+                    [],
+                    proxies,
+                    (taskId: string) => {
+                        try {
+                            let completedIds: string[] = [];
+                            if (fs.existsSync(walletProgressFile)) {
+                                const data = JSON.parse(fs.readFileSync(walletProgressFile, 'utf-8'));
+                                completedIds = data[todayStr] || [];
+                            }
+                            completedIds.push(taskId);
+                            completedIds = Array.from(new Set(completedIds));
+                            fs.writeFileSync(walletProgressFile, JSON.stringify({ [todayStr]: completedIds }, null, 2));
+                        } catch { }
+                    }
+                );
+
+            } catch (err: any) {
+                console.log(`[${currentAddr.slice(0, 8)}] ❌ Error verifying tasks: ${err.message?.slice(0, 80)}`);
+            }
+        };
+    });
+
+    console.log(`\n🔄 Running final cleanup & retry on ${retryWalletTasks.length} wallets...`);
+    await runPool(retryWalletTasks, 5);
+
+    console.log('\n🎉 Verification and retry completed. You can close the bot.');
 }
 
 main().catch(console.error);

@@ -227,22 +227,84 @@ export async function runWalletTasks(
     try {
         const ethBal = await runWithProxyRetry(() => provider.getBalance(addr));
         log(`ETH Balance: ${formatEther(ethBal)}`);
-        if (ethBal < parseEther('0.005')) {
-            log(`${C.RED}[SKIP] Insufficient ETH for gas (Balance: ${formatEther(ethBal)} ETH, minimum required: 0.005 ETH).${C.RST}`);
+        if (ethBal < parseEther('0.015')) {
+            log(`${C.RED}[SKIP] Insufficient ETH for gas (Balance: ${formatEther(ethBal)} ETH, minimum required: 0.015 ETH).${C.RST}`);
             return [];
         }
 
-        // (baseUsdcMint and baseUsdtMint are now calculated at the top for logging)
+        // --- C+/T+ BALANCE CHECK & TOP-UP PLANNING ---
+        let cPlusBal = 0n;
+        let tPlusBal = 0n;
+        try {
+            cPlusBal = await runWithProxyRetry(() => cPlus.balanceOf(addr));
+            tPlusBal = await runWithProxyRetry(() => tPlus.balanceOf(addr));
+        } catch (e: any) {
+            log(`${C.RED}⚠️ Failed to get initial C+/T+ balances: ${e.message}${C.RST}`);
+        }
 
-        // Faucet USDC until we have enough (added 50 USDC buffer to prevent jitter from missing the faucet check)
-        let neededUsdc = parseUnits((baseUsdcMint + 50).toString(), 6);
-        if (neededUsdc < parseUnits('2000', 6)) neededUsdc = parseUnits('2000', 6);
-        await fillTokenBalance(usdc, neededUsdc, 'USDC');
+        const targetCPlus = parseUnits('5000', 18);
+        const targetTPlus = parseUnits('5000', 18);
 
-        // Faucet USDT until we have enough
-        let neededUsdt = parseUnits((baseUsdtMint + 50).toString(), 6);
-        if (neededUsdt < parseUnits('2000', 6)) neededUsdt = parseUnits('2000', 6);
-        await fillTokenBalance(usdt, neededUsdt, 'USDT');
+        let neededCPlusMint = 0n;
+        let neededTPlusMint = 0n;
+
+        if (cPlusBal < targetCPlus) {
+            neededCPlusMint = targetCPlus - cPlusBal;
+            log(`[FUND CHECK] C+ balance is ${formatEther(cPlusBal)} (Deficit: ${formatEther(neededCPlusMint)}). Scheduled for top-up to 5000+ C+.`);
+        } else {
+            log(`[FUND CHECK] C+ balance is ${formatEther(cPlusBal)} (OK).`);
+        }
+
+        if (tPlusBal < targetTPlus) {
+            neededTPlusMint = targetTPlus - tPlusBal;
+            log(`[FUND CHECK] T+ balance is ${formatEther(tPlusBal)} (Deficit: ${formatEther(neededTPlusMint)}). Scheduled for top-up to 5000+ T+.`);
+        } else {
+            log(`[FUND CHECK] T+ balance is ${formatEther(tPlusBal)} (OK).`);
+        }
+
+        // Calculate total USDC/USDT needed (top-up collateral + task collateral + 100 buffer)
+        const usdcForTopup = neededCPlusMint / 10n**12n;
+        const usdcForTasks = parseUnits(baseUsdcMint.toString(), 6);
+        let totalUsdcNeeded = usdcForTopup + usdcForTasks + parseUnits('100', 6);
+        if (totalUsdcNeeded < parseUnits('2000', 6)) totalUsdcNeeded = parseUnits('2000', 6);
+
+        const usdtForTopup = neededTPlusMint / 10n**12n;
+        const usdtForTasks = parseUnits(baseUsdtMint.toString(), 6);
+        let totalUsdtNeeded = usdtForTopup + usdtForTasks + parseUnits('100', 6);
+        if (totalUsdtNeeded < parseUnits('2000', 6)) totalUsdtNeeded = parseUnits('2000', 6);
+
+        // Faucet USDC and USDT
+        await fillTokenBalance(usdc, totalUsdcNeeded, 'USDC');
+        await fillTokenBalance(usdt, totalUsdtNeeded, 'USDT');
+
+        // Execute top-up mints if required
+        if (neededCPlusMint > 0n) {
+            try {
+                const amtUsdc = neededCPlusMint / 10n**12n;
+                await doApproveInner(ADDR.USDC, ADDR.C_PLUS, amtUsdc, 'USDC to C+ Top-up');
+                log(`${C.CYN}Top-up: Minting ${formatEther(neededCPlusMint)} C+...${C.RST}`);
+                const tx = await runWithProxyRetry(() => cPlus.mint([addr, addr, ADDR.USDC, amtUsdc, neededCPlusMint]));
+                await runWithProxyRetry(() => tx.wait()); txCount++;
+                log(`${C.GRN}✅ C+ Top-up completed${C.RST}`);
+                await humanSleep(persona.minActionDelay, persona.maxActionDelay);
+            } catch (e: any) {
+                logError(`${C.RED}❌ C+ Top-up failed: ${e.message}${C.RST}`);
+            }
+        }
+
+        if (neededTPlusMint > 0n) {
+            try {
+                const amtUsdt = neededTPlusMint / 10n**12n;
+                await doApproveInner(ADDR.USDT, ADDR.T_PLUS, amtUsdt, 'USDT to T+ Top-up');
+                log(`${C.CYN}Top-up: Minting ${formatEther(neededTPlusMint)} T+...${C.RST}`);
+                const tx = await runWithProxyRetry(() => tPlus.mint([addr, addr, ADDR.USDT, amtUsdt, neededTPlusMint]));
+                await runWithProxyRetry(() => tx.wait()); txCount++;
+                log(`${C.GRN}✅ T+ Top-up completed${C.RST}`);
+                await humanSleep(persona.minActionDelay, persona.maxActionDelay);
+            } catch (e: any) {
+                logError(`${C.RED}❌ T+ Top-up failed: ${e.message}${C.RST}`);
+            }
+        }
 
         // --- EXECUTION PHASE ---
         let mintSteps: Array<() => Promise<void>> = [];
@@ -405,8 +467,8 @@ export async function runWalletTasks(
                     let tx = await runWithProxyRetry(() => cPlus.transfer(burner.address, sendAmt));
                     await runWithProxyRetry(() => tx.wait()); txCount++;
                     
-                    const gasAmt = parseEther("0.0015");
-                    log(`Sending 0.0015 ETH to burner for gas...`);
+                    const gasAmt = parseEther("0.005");
+                    log(`Sending 0.005 ETH to burner for gas...`);
                     tx = await runWithProxyRetry(() => wallet.sendTransaction({
                         to: burner.address,
                         value: gasAmt
@@ -470,8 +532,8 @@ export async function runWalletTasks(
                     let tx = await runWithProxyRetry(() => tPlus.transfer(burner.address, sendAmt));
                     await runWithProxyRetry(() => tx.wait()); txCount++;
                     
-                    const gasAmt = parseEther("0.0015");
-                    log(`Sending 0.0015 ETH to burner for gas...`);
+                    const gasAmt = parseEther("0.005");
+                    log(`Sending 0.005 ETH to burner for gas...`);
                     tx = await runWithProxyRetry(() => wallet.sendTransaction({
                         to: burner.address,
                         value: gasAmt

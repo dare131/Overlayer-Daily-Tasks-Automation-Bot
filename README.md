@@ -35,9 +35,20 @@ Additional human-behaviour layers:
 - Same wallet → same IP every run → consistent identity across sessions.
 - When `proxy.txt` is updated weekly, **stale assignments are auto-reassigned** to new proxies while valid ones are preserved.
 
-### 🔄 Automatic Task Syncing
-- Fetches today's tasks directly from the Overlayer API per wallet.
-- Falls back to a local `task-list.txt` cache and scales amounts by 1.5× if no fresh tasks are found.
+### 🔄 Task Syncing & Verification (End-of-Run Retry)
+- **Initial Sync**: Fetches today's tasks directly from the Overlayer API per wallet, automatically syncing any tasks already completed on the platform to avoid redundant transactions.
+- **Indexer Settle Wait**: The bot waits 60 seconds at the end of the run to allow Sepolia block transactions to be processed by Overlayer's database indexer.
+- **Verification & Cleanup Phase ("In the End")**: The bot queries the Overlayer API directly for each wallet to verify task completion. If the API reports any task as incomplete (due to drop, indexing latency, or RPC issues), the bot automatically re-runs only those failed tasks.
+- **Fallback scaling**: Falls back to a local `task-list.txt` cache and scales amounts by 1.5× if no fresh tasks are found on the API.
+
+### ⛽ Gwei-Aware Gas Gating
+- **Live Gwei Tracking**: Fetches and displays current network gas fee (Gwei) on startup.
+- **Gas Limit Gate**: Supports a user-defined `MAX_GWEI` limit configuration.
+- **Auto-Pause & Resume**: If Sepolia network gas price spikes above the limit, workers automatically pause and poll every 30 seconds, resuming only when the fees drop to protect your testnet ETH balance.
+
+### 💰 Automatic Token Top-up
+- **Deficit Checks**: Automatically inspects `C+` and `T+` token balances for each wallet on startup.
+- **Faucet Collateralization**: If a wallet has less than 5,000 C+ or T+ tokens, the bot automatically mints required collateral from the faucet and executes top-ups to restore a safe 5,000+ token balance.
 
 ### 🛡️ Advanced Sybil Protections
 - Outgoing sends use **random burn addresses** to break on-chain transfer graphs.
@@ -103,6 +114,7 @@ npm install
 RPC=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
 GLOBAL_AUTH_TOKEN=    # Optional master token for global task prefetch
 GLOBAL_AUTH_ADDRESS=  # Address matching the master token
+MAX_GWEI=20           # Optional max gas limit in Gwei. Blocks execution when Sepolia gas is high.
 ```
 
 ---
@@ -114,11 +126,12 @@ npx ts-node index.ts
 ```
 
 The bot will:
-1. Check activity window (waits if outside 05:00–23:00 UTC).
-2. Load and pin proxies to wallets (persistent across runs).
-3. Find a working Sepolia RPC.
+1. Find a working Sepolia RPC and display/check the current Gas fee in Gwei against `MAX_GWEI`.
+2. Check activity window (waits if outside 05:00–23:00 UTC).
+3. Load and pin proxies to wallets (persistent across runs).
 4. Launch 5 parallel workers with staggered startup.
-5. Per wallet: authenticate → fetch own tasks → execute with persona timing → save progress.
+5. Per wallet: check gas → authenticate → check C+/T+ balances (auto top-up to 5,000+ if deficient) → fetch tasks → execute on-chain transactions with persona timing → save progress.
+6. **In the End**: Wait 60 seconds for indexing, query the Overlayer API to verify all tasks, and automatically retry any that failed to register.
 
 ---
 
