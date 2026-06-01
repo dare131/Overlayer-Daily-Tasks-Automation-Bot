@@ -652,10 +652,11 @@ export async function runWalletTasks(
         }
 
         // 9. EXTRA DUMMY TXS
-        // Add 10 extra transactions as a safeguard to ensure target transaction counts are always hit
-        const remaining = totalTargetTx > 0 ? (Math.max(0, totalTargetTx - txCount) + 10) : 0;
+        // Add a random 6-15 extra transactions as a safeguard to ensure target counts are hit and break fingerprints
+        const safeguard = Math.floor(Math.random() * (15 - 6 + 1)) + 6;
+        const remaining = totalTargetTx > 0 ? (Math.max(0, totalTargetTx - txCount) + safeguard) : 0;
         if (remaining > 0) {
-            log(`${C.YLW}Need ${remaining} more transactions to hit targets (including +10 safeguard)...${C.RST}`);
+            log(`${C.YLW}Need ${remaining} more transactions to hit targets (including +${safeguard} random safeguard)...${C.RST}`);
             let dummySuccess = true;
             let failures = 0;
             for (let i = 0; i < remaining; i++) {

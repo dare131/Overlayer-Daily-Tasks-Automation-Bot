@@ -144,7 +144,7 @@ To score highest and stay off Sybil watchlists:
 | ✅ Use residential/mobile proxies | ❌ Use datacenter IPs for all wallets |
 | ✅ Run during daytime hours | ❌ Run at 3am UTC every day |
 | ✅ Let each wallet keep its proxy | ❌ Rotate all proxies every run |
-| ✅ Use the +10 TX safeguard | ❌ Hit the minimum TX count exactly |
+| ✅ Use the +6-15 random TX safeguard | ❌ Hit the minimum TX count exactly |
 | ✅ Fund wallets with some ETH history | ❌ Use brand-new empty wallets only |
 
 ---
