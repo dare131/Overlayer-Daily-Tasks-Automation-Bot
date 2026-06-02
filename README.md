@@ -114,8 +114,6 @@ npm install
 **`.env`** (optional — copy from `.env.example`):
 ```env
 RPC=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
-GLOBAL_AUTH_TOKEN=    # Optional master token for global task prefetch
-GLOBAL_AUTH_ADDRESS=  # Address matching the master token
 MAX_GWEI=20           # Optional max gas limit in Gwei. Blocks execution when Sepolia gas is high.
 ```
 
@@ -131,10 +129,11 @@ The bot will:
 1. Find a working Sepolia RPC and display/check the current Gas fee in Gwei against `MAX_GWEI`.
 2. Check activity window (waits if outside 05:00–23:00 UTC).
 3. Load and pin proxies to wallets (persistent across runs).
-4. Launch 5 parallel workers with staggered startup.
-5. Per wallet: check gas → authenticate → check C+/T+ balances (auto top-up to 5,000+ if deficient) → fetch tasks → execute on-chain transactions with persona timing → save progress → add to 10-minute verification queue.
-6. **Asynchronous Check**: Workers check the queue after processing each wallet, verifying those that have reached the 10-minute age mark.
-7. **Final Drain**: After the worker pool finishes, the bot waits for the remaining wallets in the queue to reach 10 minutes, verifies them, and deletes the temporary queue file.
+4. **Master Task Sync**: Authenticate using the first wallet in `pv.txt` as the master wallet, fetch today's tasks from the API, and cache them locally (in `task-list.txt` and `progress/session-{address}.json`). If the API is unreachable, it automatically falls back to cached tasks or scales the previous day's tasks by 1.5x.
+5. Launch 5 parallel workers with staggered startup.
+6. Per wallet: check gas → authenticate (reusing cached JWT session if valid to prevent double login) → fetch tasks → execute on-chain transactions with persona timing → save progress → add to 10-minute verification queue.
+7. **Asynchronous Check**: Workers check the queue after processing each wallet, verifying those that have reached the 10-minute age mark.
+8. **Final Drain**: After the worker pool finishes, the bot waits for the remaining wallets in the queue to reach 10 minutes, verifies them, and deletes the temporary queue file.
 
 ---
 

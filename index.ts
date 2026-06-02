@@ -10,7 +10,6 @@ import { randomSleep, humanSleep, shuffleArray, formatProxyString, getWalletPers
 process.on('unhandledRejection', (reason) => {
     console.error('⚠️ Unhandled Promise Rejection (suppressed):', reason);
 });
-
 process.on('uncaughtException', (err) => {
     console.error('⚠️ Uncaught Exception (suppressed):', err.message || err);
 });
@@ -51,22 +50,18 @@ async function checkGasPriceAndBlock(provider: JsonRpcProvider, maxGwei?: number
             const feeData = await provider.getFeeData();
             const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? parseUnits("10", "gwei");
             const gwei = Number(gasPrice) / 1e9;
-
             if (gwei <= maxGwei) {
                 if (logged) {
                     console.log(`\n⛽ Gas price is back down to ${gwei.toFixed(2)} Gwei. Resuming...`);
                 }
                 break;
             }
-
             if (!logged) {
                 console.log(`\n⛽ [GAS GATE] Current gas price is ${gwei.toFixed(2)} Gwei, which exceeds the limit of ${maxGwei} Gwei. Pausing execution...`);
                 logged = true;
             } else {
-                process.stdout.write(`.`); // silent dot indicator
+                process.stdout.write(`.`);
             }
-
-            // Sleep for 30 seconds before checking again
             await randomSleep(30000, 30000);
         } catch (e: any) {
             console.log(`\n⚠️ Failed to fetch gas price: ${e.message}. Retrying in 15s...`);
@@ -82,7 +77,7 @@ function loadVerificationQueue(): Array<{ pk: string; proxyStr: string; nextPk: 
         if (fs.existsSync(verificationQueueFile)) {
             return JSON.parse(fs.readFileSync(verificationQueueFile, 'utf-8'));
         }
-    } catch {}
+    } catch { }
     return [];
 }
 
@@ -97,7 +92,7 @@ function saveVerificationQueue(queue: Array<{ pk: string; proxyStr: string; next
         } else {
             fs.writeFileSync(verificationQueueFile, JSON.stringify(queue, null, 2));
         }
-    } catch {}
+    } catch { }
 }
 
 let verificationQueue = loadVerificationQueue();
@@ -115,13 +110,13 @@ async function verifyWallet(
     const walletProgressFile = path.join(__dirname, 'progress', `progress-${currentAddr.toLowerCase()}.json`);
 
     console.log(`[${currentAddr.slice(0, 8)}] 🔍 Verifying task completion status on Overlayer API...`);
-    
+
     let walletToken = '';
     try {
         if (fs.existsSync(sessionFile)) {
             walletToken = JSON.parse(fs.readFileSync(sessionFile, 'utf-8')).token;
         }
-    } catch {}
+    } catch { }
 
     if (!walletToken) {
         try {
@@ -169,13 +164,13 @@ async function verifyWallet(
                     completedIds.push(taskId);
                     completedIds = Array.from(new Set(completedIds));
                     fs.writeFileSync(walletProgressFile, JSON.stringify({ [todayStr]: completedIds }, null, 2));
-                } catch {}
+                } catch { }
             }
         );
 
-        // Update timestamp to now so it waits another 10m for verification of retried tasks
         walletConf.timestamp = Date.now();
         return false;
+
     } catch (err: any) {
         console.log(`[${currentAddr.slice(0, 8)}] ❌ Error verifying tasks: ${err.message?.slice(0, 80)}`);
         return false;
@@ -183,6 +178,7 @@ async function verifyWallet(
 }
 
 let processingQueue = false;
+
 async function processReadyQueue(workingRpc: string, proxies: string[], todayStr: string) {
     if (processingQueue) return;
     processingQueue = true;
@@ -195,10 +191,10 @@ async function processReadyQueue(workingRpc: string, proxies: string[], todayStr
         const now = Date.now();
         const verifiedAddresses = new Set<string>();
         let updated = false;
-        
+
         for (const item of verificationQueue) {
             const elapsed = now - item.timestamp;
-            if (elapsed >= 10 * 60 * 1000) { // 10 minutes
+            if (elapsed >= 10 * 60 * 1000) {
                 const success = await verifyWallet(item, workingRpc, proxies, todayStr);
                 if (success) {
                     const addr = new Wallet(item.pk).address;
@@ -233,13 +229,10 @@ function parseFileLines(filename: string): string[] {
 function getPreviousDayTasks(allTasks: any[], todayStr: string): any[] {
     const tasksNotToday = allTasks.filter(t => t.startDate && t.startDate !== todayStr);
     if (tasksNotToday.length === 0) return [];
-
     const dates = Array.from(new Set(tasksNotToday.map(t => t.startDate))).sort().reverse();
     const mostRecentDate = dates[0];
     console.log(`No tasks found for today (${todayStr}). Found previous day tasks from ${mostRecentDate}.`);
-
     const prevTasks = allTasks.filter(t => t.startDate === mostRecentDate);
-
     return prevTasks.map(t => {
         let newId = t.id;
         if (t.id.endsWith(mostRecentDate)) {
@@ -247,7 +240,6 @@ function getPreviousDayTasks(allTasks: any[], todayStr: string): any[] {
         } else {
             newId = `${t.id}_${todayStr}`;
         }
-
         return {
             ...t,
             id: newId,
@@ -262,12 +254,14 @@ function updateTaskListFile(fetchedTasks: any[]) {
     try {
         const taskListPath = path.join(__dirname, 'task-list.txt');
         let currentList: any = { success: true, tasks: [] };
+
         if (fs.existsSync(taskListPath)) {
             const raw = fs.readFileSync(taskListPath, 'utf-8');
             const firstBrace = raw.indexOf('{');
             const json = firstBrace !== -1 ? raw.slice(firstBrace) : raw;
             currentList = JSON.parse(json.trim());
         }
+
         if (!currentList.tasks) currentList.tasks = [];
 
         for (const t of fetchedTasks) {
@@ -278,6 +272,7 @@ function updateTaskListFile(fetchedTasks: any[]) {
                 currentList.tasks.push(t);
             }
         }
+
         currentList.timestamp = new Date().toISOString();
         fs.writeFileSync(taskListPath, JSON.stringify(currentList, null, 4));
         console.log(`Updated task-list.txt with ${fetchedTasks.length} tasks.`);
@@ -285,6 +280,79 @@ function updateTaskListFile(fetchedTasks: any[]) {
         console.log(`Could not auto-update task-list.txt: ${e.message}`);
     }
 }
+
+// ─── AUTO MASTER WALLET TASK FETCH ──────────────────────────────────────────
+// Authenticates the first wallet in pv.txt and uses it as the master wallet
+// to fetch today's tasks from the API. The fetched tasks are written to
+// task-list.txt so all other wallets benefit immediately — no .env required.
+//
+// Session is cached to progress/session-master.json so the auth round-trip
+// only happens once per day (or when the cached JWT is near expiry).
+// ─────────────────────────────────────────────────────────────────────────────
+async function fetchTasksWithMasterWallet(
+    masterPk: string,
+    proxyStr: string,
+    progressDir: string,
+    todayStr: string
+): Promise<any[]> {
+    const masterAddr = new Wallet(masterPk).address;
+    const formattedProxy = proxyStr ? formatProxyString(proxyStr) : undefined;
+    const masterSessionFile = path.join(progressDir, `session-${masterAddr.toLowerCase()}.json`);
+
+    console.log(`\n🔑 Using first wallet (${masterAddr.slice(0, 8)}...) as master to fetch today's tasks...`);
+
+    let masterToken = '';
+
+    // Try to reuse a cached JWT for the master wallet
+    try {
+        if (fs.existsSync(masterSessionFile)) {
+            const session = JSON.parse(fs.readFileSync(masterSessionFile, 'utf-8'));
+            const expiry = new Date(session.expiresAt).getTime();
+            if (session.token && expiry - Date.now() > 3600_000) {
+                masterToken = session.token;
+                console.log(`[Master] 🔑 Reusing cached JWT (expires ${session.expiresAt.slice(0, 10)}).`);
+            }
+        }
+    } catch { }
+
+    // Fresh auth if no valid cached token
+    if (!masterToken) {
+        try {
+            console.log(`[Master] 🔐 Authenticating with Overlayer API...`);
+            const nonce = await fetchNonce(masterAddr, formattedProxy);
+            const ts = Math.floor(Date.now() / 1000) + 300;
+            const authMessage = `Request Overlayer social session\n${masterAddr.toLowerCase()}\n${ts}\n${nonce}`;
+            const authSignature = await new Wallet(masterPk).signMessage(authMessage);
+            const { token, expiresAt } = await verifyAuth(masterAddr, authMessage, authSignature, formattedProxy);
+            masterToken = token;
+            // Persist JWT for subsequent runs within the same day
+            try {
+                fs.writeFileSync(masterSessionFile, JSON.stringify({ token, expiresAt }, null, 2));
+            } catch { }
+            console.log(`[Master] ✅ Auth token obtained and cached.`);
+        } catch (e: any) {
+            console.log(`[Master] ❌ Auth failed: ${e.message?.slice(0, 80)}. Will fall back to local cache.`);
+            return [];
+        }
+    }
+
+    // Fetch today's tasks using the master token
+    try {
+        const fetchedTasks = await fetchDailyTasks(masterAddr, masterToken, formattedProxy);
+        console.log(`[Master] ✅ Fetched ${fetchedTasks.length} task(s) from API for today (${todayStr}).`);
+
+        if (fetchedTasks.length > 0) {
+            // Persist tasks to task-list.txt so fallback is always current
+            updateTaskListFile(fetchedTasks);
+        }
+
+        return fetchedTasks;
+    } catch (e: any) {
+        console.log(`[Master] ❌ Task fetch failed: ${e.message?.slice(0, 80)}.`);
+        return [];
+    }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function main() {
     console.log('🚀 Starting Ultimate Overlayer Sybil-Proof Bot...');
@@ -298,6 +366,7 @@ async function main() {
     }
 
     console.log(`Loaded ${pks.length} wallets and ${proxies.length} proxies.`);
+
     const workingRpc = await getWorkingRpc();
 
     // --- GAS PRICE CHECK & GATING ---
@@ -318,45 +387,37 @@ async function main() {
     }
 
     // --- ACTIVITY WINDOW GATE ---
-    // Only run during human-plausible hours (05:00–23:00 UTC).
-    // If outside window, wait until it opens instead of running at 3am.
     if (!isWithinActivityWindow()) {
         const waitMs = msUntilActivityWindow();
         const waitMin = Math.round(waitMs / 60000);
-        console.log(`\n🗓️  Outside activity window (05:00–23:00 UTC). Waiting ${waitMin} minutes until window opens...`);
-        await randomSleep(waitMs, waitMs + 300_000); // add up to 5min jitter on wake
+        console.log(`\n🗓️ Outside activity window (05:00–23:00 UTC). Waiting ${waitMin} minutes until window opens...`);
+        await randomSleep(waitMs, waitMs + 300_000);
         console.log('Activity window open. Resuming...');
     }
 
-    // --- PERSISTENT PROXY MAP (with weekly rotation support) ---
-    // Each wallet is permanently pinned to ONE proxy, saved to disk.
-    // When proxy.txt is updated (old proxies removed, new ones added), wallets
-    // whose pinned proxy is no longer in the list are automatically reassigned.
+    // --- PERSISTENT PROXY MAP ---
     const progressDir = path.join(__dirname, 'progress');
     if (!fs.existsSync(progressDir)) { try { fs.mkdirSync(progressDir, { recursive: true }); } catch { } }
+
     const proxyMapFile = path.join(progressDir, 'proxy-map.json');
     let proxyMap: Record<string, string> = {};
     try {
         if (fs.existsSync(proxyMapFile)) proxyMap = JSON.parse(fs.readFileSync(proxyMapFile, 'utf-8'));
     } catch { }
 
-    // Build a Set of currently active proxies for O(1) lookup
     const activeProxySet = new Set(proxies);
-
     let proxyMapUpdated = false;
     let reassignedCount = 0;
     let newlyPinnedCount = 0;
-    let proxyAssignIndex = 0; // Round-robin cursor across the active proxy list
+    let proxyAssignIndex = 0;
 
     let walletConfigs = pks.map((pk, i) => {
         const normPk = pk.startsWith('0x') ? pk : '0x' + pk;
         const addr = new Wallet(normPk).address.toLowerCase();
-
         const existingProxy = proxyMap[addr];
         const isStale = existingProxy && !activeProxySet.has(existingProxy);
 
         if (!existingProxy || isStale) {
-            // New wallet OR pinned proxy was removed from proxy.txt — reassign
             if (proxies.length > 0) {
                 proxyMap[addr] = proxies[proxyAssignIndex % proxies.length];
                 proxyAssignIndex++;
@@ -390,32 +451,29 @@ async function main() {
     let theRest = walletConfigs.slice(2);
     console.log(`Keeping first ${firstTwo.length} wallets in order, shuffling the remaining ${theRest.length}...`);
     theRest = shuffleArray(theRest);
-
     walletConfigs = [...firstTwo, ...theRest];
 
-    const GLOBAL_AUTH_TOKEN = process.env.GLOBAL_AUTH_TOKEN || '';
-    const GLOBAL_AUTH_ADDRESS = process.env.GLOBAL_AUTH_ADDRESS || '';
-    let globalTasks: any[] = [];
     const todayStr = new Date().toISOString().split('T')[0];
 
-    if (GLOBAL_AUTH_TOKEN && GLOBAL_AUTH_ADDRESS) {
-        console.log(`\nFetching tasks from API globally using master auth token...`);
-        try {
-            const globalProxy = walletConfigs[0]?.proxyStr ? formatProxyString(walletConfigs[0].proxyStr) : undefined;
-            const fetchedTasks = await fetchDailyTasks(GLOBAL_AUTH_ADDRESS, GLOBAL_AUTH_TOKEN, globalProxy);
-            console.log(`✅ Loaded ${fetchedTasks.length} tasks from API.`);
-            if (fetchedTasks.length > 0) {
-                updateTaskListFile(fetchedTasks);
-                globalTasks = fetchedTasks;
-            }
-        } catch (e: any) {
-            console.log(`❌ API failed, using fallback... (${e.message})`);
-        }
-    } else {
-        console.log(`\n⚠️ GLOBAL_AUTH_TOKEN or GLOBAL_AUTH_ADDRESS is missing in .env. Falling back to local task list cache.`);
-    }
+    // ── AUTO TASK SYNC VIA FIRST WALLET ─────────────────────────────────────
+    // The first wallet in pv.txt acts as the master authenticator.
+    // It fetches today's tasks from the API, updates task-list.txt as a side-
+    // effect, and its result becomes the shared globalTasks baseline.
+    // No GLOBAL_AUTH_TOKEN or GLOBAL_AUTH_ADDRESS env vars needed.
+    // ─────────────────────────────────────────────────────────────────────────
+    let globalTasks: any[] = [];
 
+    const masterWalletConf = walletConfigs[0]; // always the first wallet (unsorted position)
+    globalTasks = await fetchTasksWithMasterWallet(
+        masterWalletConf.pk,
+        masterWalletConf.proxyStr,
+        progressDir,
+        todayStr
+    );
+
+    // Fall back to local cache when API is unreachable or returns nothing
     if (globalTasks.length === 0) {
+        console.log(`\n⚠️ Master wallet returned no tasks. Falling back to local task-list.txt cache...`);
         try {
             const rawContent = fs.readFileSync(path.join(__dirname, 'task-list.txt'), 'utf-8');
             const firstBrace = rawContent.indexOf('{');
@@ -441,14 +499,13 @@ async function main() {
         }
     }
 
-    const tasks = globalTasks; // Use the globally fetched/scaled tasks for all wallets
+    const tasks = globalTasks;
 
     const runForWallet = async (walletConf: typeof walletConfigs[0], index: number) => {
         const { pk, proxyStr, nextPk } = walletConf;
         const nextWalletAddr = new Wallet(nextPk.startsWith('0x') ? nextPk : '0x' + nextPk).address;
         const currentAddr = new Wallet(pk).address;
 
-        // Check gas price before running wallet tasks
         if (MAX_GWEI !== undefined) {
             const checkProvider = new JsonRpcProvider(workingRpc, undefined, { staticNetwork: true });
             await checkGasPriceAndBlock(checkProvider, MAX_GWEI);
@@ -457,7 +514,6 @@ async function main() {
         const persona = getWalletPersona(currentAddr);
         console.log(`[${currentAddr.slice(0, 8)}] 🧠 Persona: ${persona.name}`);
 
-        // progressDir is already created in main() scope above — reuse it
         const walletProgressFile = path.join(progressDir, `progress-${currentAddr.toLowerCase()}.json`);
         const sessionFile = path.join(progressDir, `session-${currentAddr.toLowerCase()}.json`);
 
@@ -468,21 +524,18 @@ async function main() {
                 completedTaskIds = data[todayStr] || [];
             }
         } catch (e) { }
-        // NOTE: early skip check removed — completion is re-checked below after
-        // per-wallet tasks are resolved (walletTasks may differ from global tasks)
 
         const formattedProxy = proxyStr ? formatProxyString(proxyStr) : undefined;
         const signerWallet = new Wallet(pk);
 
         // --- PER-WALLET AUTH WITH JWT SESSION CACHE ---
-        let walletTasks = tasks; // Default to globally fetched tasks as fallback
+        let walletTasks = tasks;
         let walletToken = '';
+
         try {
-            // Try to load a saved session token first
             if (fs.existsSync(sessionFile)) {
                 const session = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
                 const expiry = new Date(session.expiresAt).getTime();
-                // Use cached token if it has more than 1 hour left before expiry
                 if (session.token && expiry - Date.now() > 3600_000) {
                     walletToken = session.token;
                     console.log(`[${currentAddr.slice(0, 8)}] 🔑 Reusing cached JWT (expires ${session.expiresAt.slice(0, 10)}).`);
@@ -490,7 +543,6 @@ async function main() {
             }
 
             if (!walletToken) {
-                // Fresh authentication
                 console.log(`[${currentAddr.slice(0, 8)}] 🔐 Authenticating with Overlayer API...`);
                 const nonce = await fetchNonce(currentAddr, formattedProxy);
                 const ts = Math.floor(Date.now() / 1000) + 300;
@@ -498,23 +550,38 @@ async function main() {
                 const authSignature = await signerWallet.signMessage(authMessage);
                 const { token, expiresAt } = await verifyAuth(currentAddr, authMessage, authSignature, formattedProxy);
                 walletToken = token;
-                // Save JWT + expiry to disk for reuse next run
                 try {
                     fs.writeFileSync(sessionFile, JSON.stringify({ token, expiresAt }, null, 2));
                 } catch { }
                 console.log(`[${currentAddr.slice(0, 8)}] ✅ Auth token obtained and cached.`);
             }
 
-            // Fetch this wallet's own daily tasks using its pinned proxy
             const ownTasks = await fetchDailyTasks(currentAddr, walletToken, formattedProxy);
             if (ownTasks.length > 0) {
                 walletTasks = ownTasks;
                 console.log(`[${currentAddr.slice(0, 8)}] ✅ Loaded ${ownTasks.length} personal tasks.`);
+
                 const apiCompletedIds = ownTasks.filter(t => t.completed).map(t => t.id);
                 if (apiCompletedIds.length > 0) {
                     completedTaskIds = Array.from(new Set([...completedTaskIds, ...apiCompletedIds]));
                     console.log(`[${currentAddr.slice(0, 8)}] 📊 API reports ${apiCompletedIds.length} task(s) already completed.`);
                 }
+
+                // ── LIVE TASK-LIST SYNC ──────────────────────────────────────────────
+                // If this wallet's task list differs from what's currently in the
+                // global list (i.e. the platform pushed new tasks mid-run), update
+                // task-list.txt so later wallets pick up the freshest version.
+                const globalTaskIds = new Set(tasks.map((t: any) => t.id));
+                const newTasks = ownTasks.filter(t => !globalTaskIds.has(t.id));
+                if (newTasks.length > 0) {
+                    console.log(`[${currentAddr.slice(0, 8)}] 🔄 Detected ${newTasks.length} new task(s) not in current global list — updating task-list.txt...`);
+                    updateTaskListFile(ownTasks);
+                    // Merge new tasks into the running global list for subsequent wallets
+                    for (const nt of newTasks) {
+                        (tasks as any[]).push(nt);
+                    }
+                }
+                // ────────────────────────────────────────────────────────────────────
             } else {
                 console.log(`[${currentAddr.slice(0, 8)}] ⚠️ No tasks returned. Using global task list.`);
             }
@@ -522,15 +589,13 @@ async function main() {
             console.log(`[${currentAddr.slice(0, 8)}] ⚠️ Auth failed: ${authErr.message?.slice(0, 80)}. Falling back to global task list.`);
         }
 
-        // Re-check completion using wallet-specific tasks
         if (completedTaskIds.length >= walletTasks.length && walletTasks.length > 0) {
-            console.log(`\n⏭️  [${currentAddr.slice(0, 8)}] All ${walletTasks.length} tasks completed today (${todayStr}). Skipping!`);
+            console.log(`\n⏭️ [${currentAddr.slice(0, 8)}] All ${walletTasks.length} tasks completed today (${todayStr}). Skipping!`);
             return;
         }
 
-        // GDPR & OG NFT — send wallet token in Authorization header via proxy
+        // GDPR & OG NFT
         try {
-            // Bug fix: submitGdprConsent now receives the wallet-specific token
             await submitGdprConsent(currentAddr, formattedProxy, walletToken);
             const ts = Math.floor(Date.now() / 1000) + 300;
             const message = `Request Overlayer OG mint\n${currentAddr.toLowerCase()}\n${ts}`;
@@ -568,7 +633,6 @@ async function main() {
             console.log(`[${currentAddr.slice(0, 8)}] 📝 Added to verification queue. Will verify after 10-minute indexing delay.`);
         }
 
-        // Process any wallets in the queue that have reached the 10-minute mark
         await processReadyQueue(workingRpc, proxies, todayStr);
 
         // Fetch Points
@@ -577,7 +641,6 @@ async function main() {
             console.log(`[${currentAddr.slice(0, 8)}] Total Points: ${pts}`);
         } catch (e) { }
 
-        // Introduce a short stagger sleep between processed wallets in the pool
         const sleepMs = Math.floor(Math.random() * 5000) + 3000;
         console.log(`[${currentAddr.slice(0, 8)}] Staggering for ${sleepMs / 1000}s...`);
         await randomSleep(sleepMs, sleepMs);
@@ -586,8 +649,6 @@ async function main() {
     // Custom Concurrency Pool Runner
     async function runPool(walletTasksList: (() => Promise<void>)[], concurrency: number) {
         const workers = Array(concurrency).fill(null).map(async (_, idx) => {
-            // Stagger worker startup: use Gaussian delay based on slot position.
-            // Jitter prevents thundering-herd on RPC and API at startup.
             if (idx > 0) {
                 const baseStagger = idx * 3000;
                 const jitter = Math.floor(Math.random() * 4000);
@@ -616,12 +677,9 @@ async function main() {
         if (verificationQueue.length === 0) break;
 
         const now = Date.now();
-        // Find the oldest item
         let oldest = verificationQueue[0];
         for (const item of verificationQueue) {
-            if (item.timestamp < oldest.timestamp) {
-                oldest = item;
-            }
+            if (item.timestamp < oldest.timestamp) oldest = item;
         }
 
         const elapsed = now - oldest.timestamp;
@@ -634,7 +692,6 @@ async function main() {
             await randomSleep(waitTime, waitTime);
         }
 
-        // Run check again
         await processReadyQueue(workingRpc, proxies, todayStr);
     }
 
