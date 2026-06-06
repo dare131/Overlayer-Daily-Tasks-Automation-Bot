@@ -22,6 +22,7 @@ export const ERC20_ABI: InterfaceAbi = [
 export const MINT_ABI: InterfaceAbi = [
     'function mint(tuple(address benefactor, address beneficiary, address collateral, uint256 collateralAmount, uint256 minUsdAmount) order)',
     'function transfer(address recipient, uint256 amount) returns (bool)',
+    'function balanceOf(address account) view returns (uint256)'
 ];
 
 export const STAKE_ABI: InterfaceAbi = [
