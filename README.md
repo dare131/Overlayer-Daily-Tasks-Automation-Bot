@@ -163,6 +163,16 @@ Direct Link: [Donate via NOWPayments](https://nowpayments.io/donation/ravi)
 
 *(Note: GitHub sanitizes raw iframe widgets for security reasons, so please use the button or direct link above)*
 
+## Support the Project
+
+If this bot saves you time, tips are appreciated — any EVM network:
+
+```
+0x4f6Fb0A6c8A4C667bdF73C0257BE162B144c1624
+```
+
+ETH / Base / Arbitrum / Optimism / Polygon or any EVM chain.
+
 ---
 
 ## 🔒 Safety & Security
